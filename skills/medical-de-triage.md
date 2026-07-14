@@ -1,6 +1,6 @@
 ---
-name: Germany (Bavaria) — Medical triage & navigation (GKV)
-description: Helps decide where to go in Germany (Bavaria) for symptoms for adults/children: self-care vs GP vs pediatrician vs urgent care vs emergency. Explains how to find doctors, referrals, and what to ask. Non-diagnostic. No promises on insurance coverage.
+name: "Germany (Bavaria) — Medical triage & navigation (GKV)"
+description: "Helps decide where to go in Germany (Bavaria) for symptoms for adults/children: self-care vs GP vs pediatrician vs urgent care vs emergency. Explains how to find doctors, referrals, and what to ask. Non-diagnostic. No promises on insurance coverage."
 ---
 
 ## Purpose
