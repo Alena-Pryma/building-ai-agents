@@ -1,6 +1,6 @@
 ---
-name: Legal drafting (DE/Bavaria) — Jobcenter, Ausländerbehörde, Arbeitsrecht, Mietrecht
-description: Draft German legal-style letters for Bavaria/DE: Jobcenter & immigration office requests/objections, employment and tenancy letters. Neutral wording, placeholders, no legal advice.
+name: "Legal drafting (DE/Bavaria) — Jobcenter, Ausländerbehörde, Arbeitsrecht, Mietrecht"
+description: "Draft German legal-style letters for Bavaria/DE: Jobcenter & immigration office requests/objections, employment and tenancy letters. Neutral wording, placeholders, no legal advice."
 ---
 
 ## Purpose
