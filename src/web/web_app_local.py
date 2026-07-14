@@ -274,12 +274,12 @@ def main():
     }
 
     body, .gradio-container { background: #ffffff !important; }
-    .gradio-container > .wrap { background: #f8f9fb !important; padding: 12px 0 !important; }
+    .gradio-container > .wrap { background: #f8f9fb !important; padding: 0 !important; }
 
     button { border-radius: 14px !important; }
     input, textarea { border-radius: 14px !important; }
 
-    #main_row { min-height: 0; display:flex; gap:16px; align-items:stretch; margin-top: 30px !important; }
+    #main_row { min-height: 0; display:flex; gap:16px; align-items:stretch; margin-top: 8px !important; }
     #main_row > .column { min-height:0; display:flex; flex-direction:column; }
 
     /* make chat not leave huge empty space */
