@@ -4,7 +4,7 @@ description: Draft concise, polite business replies in German (DACH). Includes f
 ---
 
 ## Purpose
-Write **business emails in German** (DACH style): clear, polite, structured, and action-oriented.
+Write **business emails in German** (DACH, hohe Deutsch style): clear, polite, structured, and action-oriented.
 
 ## Default settings
 - Register: professional, friendly, **Sie**
@@ -25,7 +25,7 @@ vielen Dank für Ihre Nachricht. Damit ich das korrekt einordnen kann, hätte ic
 Sobald ich das habe, melde ich mich umgehend mit … zurück.  
 Vielen Dank im Voraus.  
 Mit freundlichen Grüße  
-Olena Pryma
+[NAME]
 
 ### 2) Follow-up / reminder
 **Betreff:** Follow-up: …  
