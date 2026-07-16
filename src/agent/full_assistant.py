@@ -23,7 +23,6 @@ PROJECT_ROOT = Path(".").resolve()
 YES = {"yes", "y", "да", "ага", "ok", "okay", "ок"}
 NO = {"no", "n", "нет", "nope"}
 
-
 # --------- Deps for hooks / logging ---------
 
 @dataclass
@@ -31,7 +30,6 @@ class AgentDeps:
     console: Console
     pending_op: dict[str, Any] | None = None
     confirm_count: int = 0
-
 
 # --------- Path safety ---------
 
@@ -47,7 +45,6 @@ def _resolve_in_project(path: str) -> Path | None:
     if ps == root or ps.startswith(root + "/"):
         return p
     return None
-
 
 # --------- Double confirmation flow ---------
 
@@ -117,7 +114,7 @@ def _require_double_confirm(
             return f"Do you want to perform the operation `{op}`? Please confirm (2/2): yes or no."
         return f"Подтвердите действие `{op}` ещё раз (2/2): да/yes или нет/no."
 
-    # Waiting for second yes (should not usually happen, but keep safe)
+    # Second confirmation
     if deps.confirm_count < 2:
         if lang == "en":
             return "Awaiting confirmation (2/2): yes or no."
@@ -125,7 +122,6 @@ def _require_double_confirm(
 
     # Already confirmed twice
     return None
-
 
 def _handle_confirmations(user_input: str, deps: AgentDeps) -> tuple[str | None, dict[str, Any] | None]:
     """
@@ -156,11 +152,14 @@ def _handle_confirmations(user_input: str, deps: AgentDeps) -> tuple[str | None,
         return msg, {"created_file": args["path"]}
 
     if op == "delete_file":
-        msg = _delete_file_impl(args["path"])
-        return msg, {"deleted_file": args["path"]}
+        out = _delete_file_impl(args["path"])
+        if out.startswith("Deleted "):
+            deps.last_meta = {"deleted_file": args["path"]}
+        else:
+            deps.last_meta = {"delete_error": out}
+        return out
 
     return "Unknown pending operation.", None
-
 
 # --------- Tools (safe impl) ---------
 
@@ -172,7 +171,6 @@ def _read_file_impl(path: str) -> str:
         return f"ERROR: file not found: {path}"
     return p.read_text(encoding="utf-8")
 
-
 def _write_file_impl(path: str, content: str) -> str:
     p = _resolve_in_project(path)
     if p is None:
@@ -181,41 +179,44 @@ def _write_file_impl(path: str, content: str) -> str:
     p.write_text(content, encoding="utf-8")
     return f"Wrote {len(content)} characters to {path}"
 
-
 def _search_files_impl(pattern: str) -> list[str]:
     return [str(p) for p in Path(".").glob(pattern) if p.is_file()]
-
 
 def _delete_file_impl(path: str) -> str:
     p = _resolve_in_project(path)
     if p is None:
         return f"ERROR: refusing to delete outside project root: {path}"
-    if not p.exists():
-        return f"File not found: {path}"
-    p.unlink()
-    return f"Deleted {path}"
+    abs_path = str(p.resolve())
+    try:
+        exists = p.exists()
+    except Exception as e:
+        return f"ERROR checking file {abs_path}: {e}"
+    if not exists:
+        return f"File not found: {abs_path}"
+    try:
+        print(f"Deleting file: {abs_path}")
+        p.unlink()
+    except Exception as e:
+        return f"ERROR deleting {abs_path}: {e}"
+    if p.exists():
+        return f"ERROR deleting {abs_path}: file still exists after unlink."
+    return f"Deleted {abs_path}"
 
-
-# Tool functions exposed to the agent (read/search are direct; write/delete are wrapped)
+# ----- Tool functions (read/search are direct; write/delete are wrapped) -----
 
 def read_file(path: str) -> str:
     return _read_file_impl(path)
 
-
 def search_files(pattern: str) -> list[str]:
     return _search_files_impl(pattern)
 
-
 def write_file(ctx: RunContext[AgentDeps], path: str, content: str) -> str:
-    # DO NOT write here; always enforce double confirm via deps state
     msg = _require_double_confirm(ctx.deps, "write_file", {"path": path, "content": content}, lang="ru")
     return msg if msg is not None else _write_file_impl(path, content)
-
 
 def delete_file(ctx: RunContext[AgentDeps], path: str) -> str:
     msg = _require_double_confirm(ctx.deps, "delete_file", {"path": path}, lang="ru")
     return msg if msg is not None else _delete_file_impl(path)
-
 
 # --------- Capability: File operations + hook ---------
 
@@ -238,7 +239,6 @@ class FileOperations(AbstractCapability[AgentDeps]):
     ) -> dict[str, Any]:
         ctx.deps.console.print(f"[tool] Calling tool: {call.tool_name}")
         return args
-
 
 # --------- Capability: Reasoning effort ---------
 
@@ -275,7 +275,6 @@ class ReasoningEffort(AbstractCapability[Any]):
 
         return _set_reasoning_effort
 
-
 # --------- Capability: Skills ---------
 
 def load_skill(filename: str, skills_dir: str = "skills") -> str:
@@ -283,7 +282,6 @@ def load_skill(filename: str, skills_dir: str = "skills") -> str:
     if not p.exists():
         return f"ERROR: skill not found: {p}"
     return p.read_text(encoding="utf-8")
-
 
 class Skills(AbstractCapability[Any]):
     def get_toolset(self) -> FunctionToolset:
@@ -308,47 +306,79 @@ class Skills(AbstractCapability[Any]):
             lines.append(f"- {f.name}: {name} — {desc}".rstrip())
         return "\n".join(lines) + "\n"
 
-
 # --------- Full assistant ---------
 
 FULL_INSTRUCTIONS = (
     "You are a helpful assistant for both coding and text tasks.\n"
-    "Only output code when the user explicitly asks for code or debugging.\n"
-    "You may use tools to read, search, write, and delete files.\n"
-    "Reading and searching files are always allowed.\n"
-    "Never create, write, overwrite, or delete files without the user's explicit permission.\n"
-    "Before any file modification or deletion, ask the user for confirmation.\n"
-    "Proceed only after the user confirms the operation twice with a clear affirmative response.\n"
-    "If the user does not provide two explicit confirmations, do not call write_file or delete_file.\n"
-    "Always check whether the user's request matches one of the available skills. "
-    "If it does, use the load_skill tool to load the skill before answering.\n"
-    "Do not assume the contents of a skill file without loading it first.\n"
+    "You may use tools: read_file, read_selected_file, search_files, load_skill, write_file, delete_file.\n"
+    "Allowed without confirmation: read_file, read_selected_file, search_files, load_skill.\n"
+    "write_file/delete_file require explicit user permission and two confirmations.\n"
+    "IMPORTANT SAFETY:\n"
+    "- Never call write_file/delete_file unless the user explicitly asked to write/delete.\n"
+    "- If you think a write/delete is needed, ask first.\n"
+    "\n"
+    "TOOL CALL FORMAT (NO JSON):\n"
+    "- To call a tool, output ONE line:\n"
+    "  TOOL <tool_name> key=value key=value\n"
+    "  Example: TOOL search_files pattern=**/*.py\n"
+    "  Example: TOOL read_file path=README.md\n"
+    "  Example: TOOL read_selected_file\n"
+    "\n"
+    "WRITE FILE WITHOUT JSON:\n"
+    "- Step 1: request write:\n"
+    "  TOOL write_file path=path/to/file.txt\n"
+    "- Step 2: in the next assistant message, output content ONLY between markers:\n"
+    "  CONTENT_BEGIN\n"
+    "  ...file content...\n"
+    "  CONTENT_END\n"
+    "\n"
+    "DELETE FILE (VERY IMPORTANT):\n"
+    "- NEVER use write_file when the user wants to delete a file.\n"
+    "- To delete, always call:\n"
+    "  TOOL delete_file path=<exact_filename_or_path>\n"
+    "  Example: TOOL delete_file path=demo.txt\n"
+    "- You may first call search_files to find the exact path, then call delete_file with that path.\n"
+    "\n"
+    "FINAL ANSWER:\n"
+    "  FINAL <text>\n"
 )
 
-
-def choose_model(user_text: str) -> str:
+def choose_model(user_text: str, message_history=None) -> str:
     t = (user_text or "").lower()
 
     hard = (
         "design", "architecture", "refactor", "complex", "сложно", "сложный",
-        "пошагово", "deep", "prove", "доказ", "edge case", "production",
-        "security", "perf", "оптимизац", "debug", "stack trace", "traceback",
-        "tool", "files", "read_file", "write_file", "delete_file", "search_files",
+        "пошагово", "deep", "prove", "доказ", "edge case", "production", "точно", "детально",
+        "security", "perf", "оптимизируй", "optimize", "analyse", "debug", "stack trace", "traceback",
+        "tool", "files", "read_file", "write_file", "delete_file", "search_files", "research"
     )
 
     medium = (
-        "python", "sql", "regex", "api", "pydantic", "class", "function",
+        "python", "sql", "regex", "api", "pydantic", "class", "function", "code",
         "переведи", "translate", "rewrite", "email", "письмо", "cv", "bewerbung",
+        "заявка", "запрос", "документ", "официальний", "официально"
     )
 
-    if any(k in t for k in hard) or len(t) > 1000:
+    total_len = len(FULL_INSTRUCTIONS) + len(t)
+    
+    if message_history:
+        try:
+            for m in message_history:
+                if isinstance(m, dict):
+                    c = m.get("content", "")
+                else:
+                    c = str(m)
+                total_len += len(str(c))
+        except Exception:
+            pass
+    
+    if any(k in t for k in hard) or total_len > 4000:
         return os.environ["ROUTER_MODEL_TOOLS_HEAVY"]
 
-    if any(k in t for k in medium) or len(t) > 400:
+    if any(k in t for k in medium) or total_len > 2000:
         return os.environ["ROUTER_MODEL_TOOLS_MEDIUM"]
 
     return os.environ["ROUTER_MODEL_TOOLS_LIGHT"]
-
 
 def run_full(user_input: str, deps: AgentDeps, message_history=None):
     load_dotenv()
@@ -358,8 +388,9 @@ def run_full(user_input: str, deps: AgentDeps, message_history=None):
         api_key=os.environ["ROUTER_API_KEY"],
     )
 
-    selected = choose_model(user_input)
+    selected = choose_model(user_input, message_history)
     model = OpenAIChatModel(model_name=selected, provider=provider)
+    deps.console.print(f"[router] selected model: {selected}")
 
     agent = Agent(
         model=model,
@@ -368,7 +399,7 @@ def run_full(user_input: str, deps: AgentDeps, message_history=None):
         capabilities=[FileOperations(), ReasoningEffort(), Skills()],
     )
 
-    # Handle pending confirmations BEFORE model call
+    # Handle pending confirmations before model call
     confirm_msg, file_meta = _handle_confirmations(user_input, deps)
     if confirm_msg is not None:
         meta = {"model": selected, "input_tokens": "-", "output_tokens": "-"}
@@ -376,7 +407,7 @@ def run_full(user_input: str, deps: AgentDeps, message_history=None):
             meta.update(file_meta)
         return confirm_msg, message_history, meta
 
-    # Optional: start confirmation flow if user asks directly (without tool call)
+    # Start confirmation flow if user asks directly (without tool call)
     text = (user_input or "").strip()
     lower = text.lower()
 
@@ -418,7 +449,6 @@ def run_full(user_input: str, deps: AgentDeps, message_history=None):
     meta = {"model": selected, "input_tokens": in_tok, "output_tokens": out_tok}
     return result.output, result.all_messages(), meta
 
-
 def main() -> None:
     console = Console()
     deps = AgentDeps(console=console)
@@ -434,7 +464,6 @@ def main() -> None:
 
         output, message_history, _meta = run_full(user_input, deps, message_history)
         console.print(output)
-
 
 if __name__ == "__main__":
     main()
