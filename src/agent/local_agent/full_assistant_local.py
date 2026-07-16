@@ -14,7 +14,6 @@ PROJECT_ROOT = Path(".").resolve()
 YES = {"yes", "y", "да", "ага", "ok", "okay", "ок"}
 NO = {"no", "n", "нет", "nope"}
 
-
 # ---------------- Deps ----------------
 
 @dataclass
@@ -25,7 +24,6 @@ class AgentDeps:
     selected_file: str | None = None
     last_meta: dict[str, Any] | None = None
 
-
 # ---------------- Helpers: path safety ----------------
 
 def _resolve_in_project(path: str) -> Path | None:
@@ -34,19 +32,16 @@ def _resolve_in_project(path: str) -> Path | None:
         p = (PROJECT_ROOT / p).resolve()
     else:
         p = p.resolve()
-
-    root = str(PROJECT_ROOT)
-    ps = str(p)
-    if ps == root or ps.startswith(root + "/"):
-        return p
-    return None
-
+    try:
+        p.relative_to(PROJECT_ROOT)
+    except ValueError:
+        return None
+    return p
 
 def _normalize_yesno(text: str) -> str:
     t = (text or "").strip().lower()
     t = " ".join(t.split())
     return t
-
 
 # ---------------- Confirm flow ----------------
 
@@ -87,7 +82,6 @@ def _require_double_confirm(deps: AgentDeps, op: str, args: dict[str, Any]) -> s
 
     return None
 
-
 def _handle_confirmations(user_input: str, deps: AgentDeps) -> str | None:
     t = _normalize_yesno(user_input)
     if deps.pending_op is None or t not in (YES | NO):
@@ -114,11 +108,13 @@ def _handle_confirmations(user_input: str, deps: AgentDeps) -> str | None:
 
     if op == "delete_file":
         out = _delete_file_impl(args["path"])
-        deps.last_meta = {"deleted_file": args["path"]}
+        if out.startswith("Deleted "):
+            deps.last_meta = {"deleted_file": args["path"]}
+        else:
+            deps.last_meta = {"delete_error": out}
         return out
 
     return "Unknown pending operation."
-
 
 # ---------------- Tools (impl) ----------------
 
@@ -130,7 +126,6 @@ def _read_file_impl(path: str) -> str:
         return f"ERROR: file not found: {path}"
     return p.read_text(encoding="utf-8")
 
-
 def _write_file_impl(path: str, content: str) -> str:
     p = _resolve_in_project(path)
     if p is None:
@@ -139,20 +134,40 @@ def _write_file_impl(path: str, content: str) -> str:
     p.write_text(content, encoding="utf-8")
     return f"Wrote {len(content)} characters to {path}"
 
-
 def _search_files_impl(pattern: str) -> list[str]:
     return [str(p) for p in Path(".").glob(pattern) if p.is_file()]
-
 
 def _delete_file_impl(path: str) -> str:
     p = _resolve_in_project(path)
     if p is None:
         return f"ERROR: refusing to delete outside project root: {path}"
+    
     if not p.exists():
-        return f"File not found: {path}"
-    p.unlink()
-    return f"Deleted {path}"
+        name = p.name
+        candidates: list[Path] = []
+        
+        if p.suffix == "":
+            candidates = [c for c in PROJECT_ROOT.rglob(f"{name}*") if c.is_file()]
 
+        if len(candidates) == 0:
+            return f"File not found: {str(p.resolve())}"
+        if len(candidates) > 1:
+            listed = ", ".join(str(c.relative_to(PROJECT_ROOT)) for c in candidates[:5])
+            if len(candidates) > 5:
+                listed += ", ..."
+            return f"Multiple files match '{path}': {listed}. Please specify the exact file path."
+
+        p = candidates[0]
+
+    abs_path = str(p.resolve())
+    try:
+        print(f"[DEBUG] Deleting file: {abs_path}")
+        p.unlink()
+    except Exception as e:
+        return f"ERROR deleting {abs_path}: {e}"
+    if p.exists():
+        return f"ERROR deleting {abs_path}: file still exists after unlink."
+    return f"Deleted {abs_path}"
 
 def _load_skill_impl(filename: str, skills_dir: str = "skills") -> str:
     p = Path(skills_dir) / filename
@@ -160,12 +175,10 @@ def _load_skill_impl(filename: str, skills_dir: str = "skills") -> str:
         return f"ERROR: skill not found: {p}"
     return p.read_text(encoding="utf-8")
 
-
 def _read_selected_file_impl(deps: AgentDeps) -> str:
     if not deps.selected_file:
         return "No file selected. Ask the user to upload a file first."
     return _read_file_impl(deps.selected_file)
-
 
 # ---------------- Skills list for prompt ----------------
 
@@ -184,16 +197,23 @@ def _skills_block(skills_dir: str = "skills") -> str:
         lines.append(f"- {f.name}: {name} — {desc}".rstrip())
     return "\n".join(lines) + "\n"
 
-
 # ---------------- Parsing: TOOL line + markers ----------------
 
 def _parse_tool_line(text: str) -> tuple[str, dict[str, str]] | None:
-    t = (text or "").strip()
-    if not t.startswith("TOOL "):
+    lines = (text or "").splitlines()
+    tool_line = None
+    for ln in lines:
+        ln = ln.strip()
+        if ln.startswith("TOOL "):
+            tool_line = ln
+            break
+    if not tool_line:
         return None
-    parts = t.split()
+
+    parts = tool_line.split()
     if len(parts) < 2:
         return None
+
     name = parts[1].strip()
     args: dict[str, str] = {}
     for p in parts[2:]:
@@ -203,7 +223,6 @@ def _parse_tool_line(text: str) -> tuple[str, dict[str, str]] | None:
         args[k.strip()] = v.strip()
     return name, args
 
-
 def _extract_content_block(text: str) -> str | None:
     t = text or ""
     a = t.find("CONTENT_BEGIN")
@@ -211,7 +230,6 @@ def _extract_content_block(text: str) -> str | None:
     if a == -1 or b == -1 or b <= a:
         return None
     return t[a + len("CONTENT_BEGIN") : b].strip("\n")
-
 
 # ---------------- Prompt ----------------
 
@@ -243,7 +261,6 @@ FULL_INSTRUCTIONS = (
     "  FINAL <text>\n"
 )
 
-
 # ---------------- Local runner ----------------
 
 def run_full_local(
@@ -254,7 +271,7 @@ def run_full_local(
     if messages is None:
         messages = []
 
-    # 0) confirmations first (this is the ONLY place where write/delete can actually execute)
+    # 0) Confirmation first (this is the ONLY place where write/delete can actually execute)
     confirm_out = _handle_confirmations(user_input, deps)
     if confirm_out is not None:
         meta = {"model": MODEL_NAME, "input_tokens": "—", "output_tokens": "—"}
@@ -267,6 +284,8 @@ def run_full_local(
     convo: list[dict[str, str]] = [{"role": "system", "content": system}]
     convo.extend([m for m in messages if m.get("role") != "system"])
     convo.append({"role": "user", "content": (user_input or "").strip()})
+    if deps.selected_file:
+        convo.append({"role": "user", "content": "Read the selected uploaded file using TOOL read_selected_file. Then base the answer on its content."})
 
     pending_write_path: str | None = None
     pending_write_content: str | None = None
@@ -319,10 +338,38 @@ def run_full_local(
 
         tool_name, args = tool
 
-        # SAFETY: never execute write/delete directly; always convert into confirmation request
+        # Never execute write/delete directly; always convert into confirmation request
         if tool_name == "delete_file":
-            path = args.get("path", "")
-            msg = _require_double_confirm(deps, "delete_file", {"path": path})
+            raw = args.get("path", "").strip()
+
+            candidates: list[Path] = []
+
+            base = _resolve_in_project(raw)
+            if base is not None and base.exists():
+                candidates = [base]
+            else:
+                name = (base or Path(raw)).name
+                candidates = [c for c in PROJECT_ROOT.rglob(f"{name}*") if c.is_file()]
+
+            if not candidates:
+                msg = f"Файл по имени '{raw}' не найден в проекте."
+                messages.append({"role": "user", "content": user_input})
+                messages.append({"role": "assistant", "content": msg})
+                return msg, messages, meta
+
+            if len(candidates) > 1:
+                listed = ", ".join(str(c.relative_to(PROJECT_ROOT)) for c in candidates[:5])
+                if len(candidates) > 5:
+                    listed += ", ..."
+                msg = f"Найдено несколько файлов для '{raw}': {listed}. Уточните, какой именно удалить."
+                messages.append({"role": "user", "content": user_input})
+                messages.append({"role": "assistant", "content": msg})
+                return msg, messages, meta
+
+            cand = candidates[0]
+            rel_path = str(cand.relative_to(PROJECT_ROOT))
+
+            msg = _require_double_confirm(deps, "delete_file", {"path": rel_path})
             messages.append({"role": "user", "content": user_input})
             messages.append({"role": "assistant", "content": msg})
             return msg, messages, meta
@@ -337,7 +384,6 @@ def run_full_local(
             convo.append({"role": "user", "content": f"Tool result ({tool_name}): {result}"})
             continue
 
-        # dispatch safe tools
         if tool_name == "search_files":
             result = _search_files_impl(args.get("pattern", "**/*"))
         elif tool_name == "read_file":
