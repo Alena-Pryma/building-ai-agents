@@ -1,3 +1,7 @@
+import os
+import subprocess
+import sys
+
 import gradio as gr
 from rich.console import Console
 
@@ -13,6 +17,37 @@ from pathlib import Path
 from src.agent.local_agent.full_assistant_local import run_full_local, AgentDeps
 
 console = Console()
+
+
+def format_file_label(path, prefix="Upload"):
+    if not path:
+        return f"{prefix}: no file"
+    return f"{prefix}: {Path(str(path)).name}"
+
+
+def make_button_file_label(path, prefix):
+    return format_file_label(path, prefix=prefix)
+
+
+def open_path_in_default_app(path):
+    if not path:
+        return False
+
+    p = Path(str(path)).expanduser()
+    if not p.exists():
+        return False
+
+    try:
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", str(p)])
+        elif os.name == "nt":
+            os.startfile(str(p))  # type: ignore[attr-defined]
+        else:
+            subprocess.Popen(["xdg-open", str(p)])
+        return True
+    except Exception:
+        return False
+
 
 def make_badge(meta):
     if isinstance(meta, dict):
@@ -77,7 +112,38 @@ def router(exercise: str, user_text: str, ex2_history, ex3_history, ex4_history,
         return out, ex2_history, ex3_history, ex4_history, ex6_history, meta
     raise KeyError(exercise)
 
-def on_send(exercise, user_text, chat, ex2_hist, ex3_hist, ex4_hist, ex6_hist, full_hist, full_deps, uploaded_file):
+def on_upload(uploaded_file, full_deps):
+    if full_deps is None:
+        full_deps = AgentDeps(console=console)
+
+    if uploaded_file is not None:
+        path = getattr(uploaded_file, "name", None) or str(uploaded_file)
+        full_deps.selected_file = path
+    else:
+        full_deps.selected_file = None
+
+    upload_label = make_button_file_label(getattr(full_deps, "selected_file", None), "Upload")
+    open_label = make_button_file_label(getattr(full_deps, "opened_file", None), "Open")
+    return full_deps, upload_label, open_label
+
+
+def on_open_file(selected_file, full_deps):
+    if full_deps is None:
+        full_deps = AgentDeps(console=console)
+
+    if selected_file is None:
+        full_deps.opened_file = None
+    else:
+        path = getattr(selected_file, "name", None) or str(selected_file)
+        full_deps.opened_file = path
+        open_path_in_default_app(path)
+
+    upload_label = make_button_file_label(getattr(full_deps, "selected_file", None), "Upload")
+    open_label = make_button_file_label(getattr(full_deps, "opened_file", None), "Open")
+    return full_deps, upload_label, open_label
+
+
+def on_send(exercise, user_text, chat, ex2_hist, ex3_hist, ex4_hist, ex6_hist, full_hist, full_deps, uploaded_file, opened_file):
     user_text = (user_text or "").strip()
 
     if full_deps is None:
@@ -91,53 +157,22 @@ def on_send(exercise, user_text, chat, ex2_hist, ex3_hist, ex4_hist, ex6_hist, f
     file_status_html = ""
     file_proof_wrap_visible = False
     proof_file = None
+    upload_label_md = make_button_file_label(getattr(full_deps, "selected_file", None), "Upload")
+    open_label_md = make_button_file_label(getattr(full_deps, "opened_file", None), "Open")
 
-    # Update selected file from upload
     if uploaded_file is not None:
         path = getattr(uploaded_file, "name", None) or str(uploaded_file)
         full_deps.selected_file = path
-        file_status_html = f"<div class='model-badge'>Selected file: <span class='model-pill'>{Path(full_deps.selected_file).name}</span></div>"
-        file_bar_visible = True
+        upload_label_md = make_button_file_label(full_deps.selected_file, "Upload")
 
-    # Always provide uploaded file context to Full Assistant Local
-    if exercise == "Full Assistant Local" and getattr(full_deps, "selected_file", None):
-        p = Path(full_deps.selected_file)
-        suffix = (p.suffix or "").lower()
-
-        header = (
-            "\n\n---\n"
-            + f"UPLOADED_FILE_NAME: {p.name}\n"
-            + f"UPLOADED_FILE_PATH: {full_deps.selected_file}\n"
-        )
-
-        if suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
-            user_text = user_text + header + f"UPLOADED_FILE_TYPE: image ({suffix})\n"
-        elif suffix in {".pdf", ".docx", ".pptx", ".xlsx", ".xls", ".zip"}:
-            user_text = user_text + header + f"UPLOADED_FILE_TYPE: binary/document ({suffix})\n"
-        else:
-            try:
-                file_text = p.read_text(encoding="utf-8", errors="replace")[:12000]
-                user_text = (
-                    user_text
-                    + header
-                    + f"UPLOADED_FILE_TYPE: text ({suffix or 'no extension'})\n"
-                    + "UPLOADED_FILE_CONTENT (first 12000 chars):\n"
-                    + file_text
-                )
-            except Exception as e:
-                user_text = (
-                    user_text
-                    + header
-                    + f"(FAILED_TO_READ_UPLOADED_FILE_AS_TEXT: {type(e).__name__}: {e})\n"
-                )
-            user_text = user_text + "\nIMPORTANT: Use the uploaded document content above only. Answer my question directly with: 4 short bullets (where to go + red flags) and then 2–3 next steps. Do NOT summarize and do not show the whole document."
+    if opened_file is not None:
+        path = getattr(opened_file, "name", None) or str(opened_file)
+        full_deps.opened_file = path
+        open_label_md = make_button_file_label(full_deps.opened_file, "Open")
 
     badge_html = "<div class='model-badge'>Model: <span class='model-pill'>—</span></div>"
 
     if not user_text:
-        if getattr(full_deps, "selected_file", None):
-            file_status_html = f"<div class='model-badge'>Selected file: <span class='model-pill'>{Path(full_deps.selected_file).name}</span></div>"
-            file_bar_visible = True
         return (
             chat, "", ex2_hist, ex3_hist, ex4_hist, ex6_hist, full_hist, full_deps,
             badge_html,
@@ -145,6 +180,8 @@ def on_send(exercise, user_text, chat, ex2_hist, ex3_hist, ex4_hist, ex6_hist, f
             file_status_html,
             gr.update(visible=file_bar_visible),
             gr.update(visible=file_proof_wrap_visible),
+            upload_label_md,
+            open_label_md,
         )
 
     if user_text.lower() in {"exit", "quit"}:
@@ -155,6 +192,8 @@ def on_send(exercise, user_text, chat, ex2_hist, ex3_hist, ex4_hist, ex6_hist, f
             "",
             gr.update(visible=False),
             gr.update(visible=False),
+            "Upload: no file",
+            "Open: no file",
         )
 
     try:
@@ -162,24 +201,47 @@ def on_send(exercise, user_text, chat, ex2_hist, ex3_hist, ex4_hist, ex6_hist, f
             out, full_hist, meta = run_full_local(user_text, full_deps, full_hist)
             badge_html = make_badge(meta)
 
-            # If assistant wrote/deleted files, backend can include meta keys too
             created = meta.get("created_file") if isinstance(meta, dict) else None
             deleted = meta.get("deleted_file") if isinstance(meta, dict) else None
+            used_skill = meta.get("used_skill") if isinstance(meta, dict) else None
+            last_tool = meta.get("last_tool") if isinstance(meta, dict) else None
 
-            if getattr(full_deps, "selected_file", None):
-                file_status_html = f"<div class='model-badge'>Selected file: <span class='model-pill'>{full_deps.selected_file}</span></div>"
+            if used_skill:
+                file_status_html = (
+                    "<div class='model-badge'>"
+                    f"Used skill: <span class='model-pill'>{Path(str(used_skill)).name}</span>"
+                    + (f"&nbsp;&nbsp;Tool: <span class='model-pill'>{last_tool}</span>" if last_tool else "")
+                    + "</div>"
+                )
                 file_bar_visible = True
-
-            if created:
+            elif created:
                 proof_file = created
-                file_status_html = f"<div class='model-badge'>File created: <span class='model-pill'>{created}</span></div>"
+                nice_name = Path(created).name
+                file_status_html = (
+                    "<div class='model-badge'>"
+                    f"File created: <span class='model-pill'>{nice_name}</span>"
+                    + (f"&nbsp;&nbsp;Tool: <span class='model-pill'>{last_tool}</span>" if last_tool else "")
+                    + "</div>"
+                )
                 file_bar_visible = True
                 file_proof_wrap_visible = True
             elif deleted:
                 proof_file = None
-                file_status_html = f"<div class='model-badge'>File deleted: <span class='model-pill'>{deleted}</span></div>"
+                file_status_html = (
+                    "<div class='model-badge'>"
+                    f"File deleted: <span class='model-pill'>{deleted}</span>"
+                    + (f"&nbsp;&nbsp;Tool: <span class='model-pill'>{last_tool}</span>" if last_tool else "")
+                    + "</div>"
+                )
                 file_bar_visible = True
                 file_proof_wrap_visible = False
+            elif last_tool:
+                file_status_html = (
+                    "<div class='model-badge'>"
+                    f"Tool: <span class='model-pill'>{last_tool}</span>"
+                    "</div>"
+                )
+                file_bar_visible = True
 
             chat = chat + [{"role": "user", "content": user_text}, {"role": "assistant", "content": out}]
             return (
@@ -189,6 +251,8 @@ def on_send(exercise, user_text, chat, ex2_hist, ex3_hist, ex4_hist, ex6_hist, f
                 file_status_html,
                 gr.update(visible=file_bar_visible),
                 gr.update(visible=file_proof_wrap_visible),
+                upload_label_md,
+                open_label_md,
             )
 
         out, ex2_hist, ex3_hist, ex4_hist, ex6_hist, meta = router(exercise, user_text, ex2_hist, ex3_hist, ex4_hist, ex6_hist)
@@ -201,6 +265,8 @@ def on_send(exercise, user_text, chat, ex2_hist, ex3_hist, ex4_hist, ex6_hist, f
             file_status_html,
             gr.update(visible=False),
             gr.update(visible=False),
+            upload_label_md,
+            open_label_md,
         )
 
     except Exception as e:
@@ -213,6 +279,8 @@ def on_send(exercise, user_text, chat, ex2_hist, ex3_hist, ex4_hist, ex6_hist, f
             file_status_html,
             gr.update(visible=False),
             gr.update(visible=False),
+            upload_label_md,
+            open_label_md,
         )
 
 def on_clear():
@@ -224,6 +292,8 @@ def on_clear():
         "",
         gr.update(visible=False),
         gr.update(visible=False),
+        "Upload: no file",
+        "Open: no file",
     )
 
 # FIT_JS measures the *actual* pixel space left in the viewport and sets that as the #chatbox height directly.
@@ -530,7 +600,7 @@ def main():
       margin: 0 !important;
     }
     /* Upload file button */
-    #uploader {
+    #uploader, #open_btn {
       display: inline-flex !important;
       justify-content: center !important;
       align-items: center !important;
@@ -539,10 +609,50 @@ def main():
       border-radius: 999px !important;
       font-weight: 600 !important;
       cursor: pointer !important;
+      flex: 1 1 0 !important;
+      min-width: 0 !important;
     }
 
-    #uploader * {
-      color: #inherit !important;
+    #uploader button, #open_btn button{
+      width: 100% !important;
+      height: 36px !important;
+      min-height: 36px !important;
+      border-radius: 999px !important;
+      font-weight: 600 !important;
+      border: 1px solid var(--button-primary-border-color, transparent) !important;
+      background: var(--button-primary-background-fill, var(--button-primary-background, inherit)) !important;
+      color: var(--button-primary-text-color, inherit) !important;
+    }
+
+    #uploader *, #open_btn * {
+      color: inherit !important;
+    }
+
+    #file_action_row {
+      gap: 8px !important;
+      align-items: stretch !important;
+    }
+
+    #upload_action, #open_action {
+      display: flex !important;
+      flex-direction: column !important;
+      align-items: center !important;
+      gap: 6px !important;
+      flex: 1 1 0 !important;
+      min-width: 0 !important;
+    }
+
+    #file_action_row .gr-button {
+      width: 100% !important;
+    }
+
+    #upload_file_name_line, #open_file_name_line {
+      margin-top: 0 !important;
+      font-size: 12px !important;
+      color: rgba(0,0,0,.65) !important;
+      min-height: 18px !important;
+      text-align: center !important;
+      line-height: 1.3 !important;
     }
 
     """
@@ -583,7 +693,13 @@ def main():
                             label="Mode",
                         )
                         gr.Markdown("<div style='white-space: normal; line-height: 1.25; text-align:center;'>Choose 1 of 6 exercises or Full Assistant🦾.</div>")
-                        uploaded = gr.UploadButton(label="Upload file", file_count="single", elem_id="uploader", variant="primary")
+                        with gr.Row(elem_id="file_action_row"):
+                            with gr.Column(elem_id="upload_action"):
+                                uploaded = gr.UploadButton(label="Upload", file_count="single", elem_id="uploader", variant="primary")
+                                upload_file_name_line = gr.Markdown(value="Upload: no file", elem_id="upload_file_name_line")
+                            with gr.Column(elem_id="open_action"):
+                                opened = gr.UploadButton(label="Open", file_count="single", elem_id="open_btn", variant="primary")
+                                open_file_name_line = gr.Markdown(value="Open: no file", elem_id="open_file_name_line")
 
                 with gr.Column(scale=3, min_width=520, elem_id="chat_col"):
                     model_badge = gr.Markdown(
@@ -593,9 +709,9 @@ def main():
                     file_bar = gr.Group(visible=False, elem_classes=["panel", "filebar"])
                     with file_bar:
                         file_status = gr.Markdown(value="")
-                        file_proof_wrap = gr.Group(visible=False)
+                        file_proof_wrap = gr.Group(visible=False, elem_id="file_proof_wrap")
                         with file_proof_wrap:
-                            file_proof = gr.File(label="File", interactive=False)
+                            file_proof = gr.File(label="Download", interactive=True)
 
                     chatbot = gr.Chatbot(
                         label="Chat",
@@ -640,17 +756,30 @@ def main():
                     emoji_toggle = gr.Button("🙂", elem_id="emoji_toggle", scale=0)
 
         io_list = [chatbot, user_box, ex2_history, ex3_history, ex4_history, ex6_history,
-                   full_history, full_deps, model_badge, file_proof, file_status, file_bar, file_proof_wrap]
+                   full_history, full_deps, model_badge, file_proof, file_status, file_bar, file_proof_wrap,
+                   upload_file_name_line, open_file_name_line]
+
+        uploaded.change(
+            fn=on_upload,
+            inputs=[uploaded, full_deps],
+            outputs=[full_deps, upload_file_name_line, open_file_name_line],
+        )
+
+        opened.change(
+            fn=on_open_file,
+            inputs=[opened, full_deps],
+            outputs=[full_deps, upload_file_name_line, open_file_name_line],
+        )
 
         send.click(
             fn=on_send,
-            inputs=[exercise, user_box, chatbot, ex2_history, ex3_history, ex4_history, ex6_history, full_history, full_deps, uploaded],
+            inputs=[exercise, user_box, chatbot, ex2_history, ex3_history, ex4_history, ex6_history, full_history, full_deps, uploaded, opened],
             outputs=io_list,
         ).then(fn=None, inputs=None, outputs=None, js=SCROLL_JS)
 
         user_box.submit(
             fn=on_send,
-            inputs=[exercise, user_box, chatbot, ex2_history, ex3_history, ex4_history, ex6_history, full_history, full_deps, uploaded],
+            inputs=[exercise, user_box, chatbot, ex2_history, ex3_history, ex4_history, ex6_history, full_history, full_deps, uploaded, opened],
             outputs=io_list,
         ).then(fn=None, inputs=None, outputs=None, js=SCROLL_JS)
 
