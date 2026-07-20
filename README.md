@@ -21,7 +21,7 @@ This project is my solution for the “Building AI Agents” exercises (1–6) a
 ## How to run (ollama / Gradio UI)
 1) Install dependencies:
    `pip install -r requirements.txt`
-2) Make sure Ollama is installed and the model is available (e.g. `qwen2.5-coder:7b`)
+2) Make sure Ollama is installed and the model is available (e.g. `llama3.2:3b`, `qwen2.5-coder:7b`)
 3) Run the app:
    `python run_web_local.py`
 
